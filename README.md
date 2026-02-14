@@ -28,6 +28,63 @@ S2 REWRITE is auditable by construction:
 - **Hard entropy descent**: each accepted rewrite strictly decreases `E(q, M)`.
 - Optional deterministic **external verifier** `V(q,M)` to block “bridge-only” passes.
 
+### Architecture diagram (Mermaid)
+
+```mermaid
+graph TD
+  q["q (query)"] --> zq["Layer0: embed(q) -> zq"]
+
+  MM["M (long-term memory store)"] --> atoms["atoms mi = <qi,vi,zi,ci,si,etai>"]
+  atoms --> zi["Layer0: embed(vi) -> zi"]
+
+  zq --> S1["S1 retrieval: top-K by cos(zq,zi)*max(0,si)"]
+  zi --> S1
+  S1 --> M0["M0 (candidate set)"]
+
+  M0 --> E0["Entropy: E(q,M)=a*Ecov + b*Econf + g*Estab"]
+  zq --> E0
+  E0 --> gate{E <= epsilon ?}
+
+ gate -- yes --> v_on{"verifier enabled?"}
+gate -- no  --> s2_start
+
+v_on -- no  --> G["G(q, M*) -> output y"]
+v_on -- yes --> vchk{"V(q, M) = 1 ?"}
+vchk -- yes --> G
+vchk -- no  --> refuse["REFUSE (verifier failed)"]
+
+  subgraph S2["S2 REWRITE loop (No-DROP + strict descent)"]
+    s2_start["state: (q,Mt), E>epsilon"] --> R["R(q,Mt): propose DeltaMt (bridge/constraint/abstraction)"]
+    R --> union["Mt1 = Mt U DeltaMt (only add)"]
+    union --> E1["compute E(q,Mt1)"]
+    E1 --> descent{E1 < E0 ?}
+
+    descent -- yes --> ok{E1 <= epsilon ?}
+    ok -- yes --> Mstar["M* = Mt1"]
+    ok -- no --> tmax{t < Tmax ?}
+    tmax -- yes --> loopback["next t: set Mt=Mt1, E0=E1"]
+    loopback --> R
+
+    tmax -- no --> fail_t["REFUSE (reached Tmax)"]
+    descent -- no --> fail_r["REFUSE (no admissible REWRITE)"]
+  end
+
+  Mstar --> v_on2{"verifier enabled?"}
+  v_on2 -- no --> G
+  v_on2 -- yes --> vchk2{"V(q, M*) = 1 ?"}
+  vchk2 -- yes --> G
+  vchk2 -- no --> refuse
+
+  Mstar --> hist["update H(cluster(q),sig(M)) -> p_succ"]
+  hist --> Hfile["history.json"]
+
+  Mstar --> wb{write-back enabled?}
+  wb -- yes --> cap{"|M| <= Cmax ?"}
+  cap -- yes --> MM
+  cap -- no --> fold["folding: add abstraction + mark subsumed (no delete)"]
+  fold --> MM
+```
+
 ### Quickstart
 
 Requirements: Python 3.11+ and `numpy`.
