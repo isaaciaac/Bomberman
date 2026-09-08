@@ -15,7 +15,7 @@ import numpy as np
 from .config import VerifierConfig
 from .embedding import cos, embed_text, tokenize
 from .entropy import chi
-from .types import MemoryAtom, is_constraint_atom
+from .types import MemoryAtom, is_abstraction_atom, is_bridge_atom, is_constraint_atom
 
 _REQ_RE = re.compile(r"REQ\[([^\]]+)\]")
 
@@ -83,9 +83,17 @@ class VerifierResult:
 
 
 def _is_non_generated(atom: MemoryAtom) -> bool:
-    # Seed atoms usually do not carry rewrite_type.
+    # Seed atoms usually do not carry rewrite_type. Generated text markers are
+    # also authoritative, including when metadata was lost during import.
+    # Malformed provenance must not promote an atom to supporting evidence.
     rt = atom.eta_i.get("rewrite_type", "")
-    return not isinstance(rt, str) or rt == ""
+    return (
+        isinstance(rt, str)
+        and rt == ""
+        and not is_constraint_atom(atom)
+        and not is_bridge_atom(atom)
+        and not is_abstraction_atom(atom)
+    )
 
 
 def _atom_claim_key(atom: MemoryAtom) -> str | None:
@@ -200,7 +208,9 @@ def verify_state(
     required_keys.extend([str(k) for k in cfg.required_claim_keys if str(k)])
     missing_keys: list[str] = []
     if required_keys:
-        present = {k for m in M if (k := _atom_claim_key(m)) is not None}
+        # S2 metadata alone cannot supply a missing external fact. Apply the
+        # same evidence boundary used for the similarity and overlap checks.
+        present = {k for m in non_generated if (k := _atom_claim_key(m)) is not None}
         for k in required_keys:
             if k not in present:
                 missing_keys.append(k)
