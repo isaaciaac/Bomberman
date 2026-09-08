@@ -6,26 +6,34 @@ import itertools
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Iterable, Sequence
 
 import numpy as np
 
 from .config import EntropyConfig, RewriteConfig, StabilityConfig
 from .embedding import cos, embed_average, embed_text
 from .entropy import EntropyBreakdown, EntropyWeights, HistoryStore, compute_entropy
-from .types import MemoryAtom, is_constraint_atom
+from .types import CognitiveState, MemoryAtom, is_constraint_atom
 
 
 class AtomFactory:
-    """Simple ID generator for new atoms."""
+    """Deterministic ID generator that avoids existing and proposed atom IDs."""
 
-    def __init__(self, prefix: str = "rw"):
+    def __init__(self, prefix: str = "rw", *, existing_ids: Iterable[str] = ()):
         self._prefix = prefix
         self._n = 0
+        self._used_ids = set(existing_ids)
+
+    def reserve_ids(self, ids: Iterable[str]) -> None:
+        self._used_ids.update(ids)
 
     def new_id(self, kind: str) -> str:
-        self._n += 1
-        return f"{self._prefix}_{kind}_{self._n}"
+        while True:
+            self._n += 1
+            atom_id = f"{self._prefix}_{kind}_{self._n}"
+            if atom_id not in self._used_ids:
+                self._used_ids.add(atom_id)
+                return atom_id
 
 
 @dataclass(frozen=True)
@@ -212,6 +220,9 @@ def evaluate_rewrite_candidates(
 ) -> list[tuple[RewriteProposal, EntropyBreakdown]]:
     """Generate and score candidate rewrites, returning (proposal, entropy_after)."""
 
+    # Callers (including training) may supply memories with rw_* IDs.
+    factory.reserve_ids(m.id for m in M)
+    state = CognitiveState(q=q, M=tuple(M))
     enabled = set(rewrite.enabled_kinds)
     ordered = list(kinds) if kinds is not None else list(rewrite.enabled_kinds)
     ordered = [k for k in ordered if k in enabled]
@@ -231,7 +242,8 @@ def evaluate_rewrite_candidates(
 
     evaluated: list[tuple[RewriteProposal, EntropyBreakdown]] = []
     for prop in proposals:
-        M2 = list(M) + list(prop.delta)
+        # Use exactly the same ID-based union as the engine's committed state.
+        M2 = state.with_added(prop.delta).M
         after = compute_entropy(
             q,
             z_q=z_q,

@@ -120,6 +120,10 @@ class MemoryStore:
         self._writeback_atoms = []
         if self.writeback.enabled and self.writeback.persist_path.exists():
             self._writeback_atoms = load_memory_file(self.writeback.persist_path, embedding=self.embedding)
+        self._refresh_atoms()
+
+    def _refresh_atoms(self) -> None:
+        """Refresh the merged view without reloading unpersisted changes."""
 
         # Stable de-dup by id, allowing write-back atoms to override seed atoms.
         #
@@ -128,10 +132,7 @@ class MemoryStore:
         # the seed file.
         idx: dict[str, int] = {}
         merged: list[MemoryAtom] = []
-        for a in self._seed:
-            idx[a.id] = len(merged)
-            merged.append(a)
-        for a in self._writeback_atoms:
+        for a in [*self._seed, *self._writeback_atoms]:
             if a.id in idx:
                 merged[idx[a.id]] = a
             else:
@@ -195,7 +196,7 @@ class MemoryStore:
         """Optionally persist a subset of atoms into long-term memory.
 
         This implements a minimal "repeated validation" rule:
-        - After each *successful* run, a candidate atom's content fingerprint count increases.
+        - After each *successful* run, a candidate atom's content fingerprint count increases once.
         - When the count reaches `min_successes`, the atom is persisted (deduped by content id).
         """
 
@@ -204,11 +205,18 @@ class MemoryStore:
 
         allowed = set(self.writeback.include_kinds)
         candidates: list[MemoryAtom] = []
+        seen_candidates: set[str] = set()
         for a in atoms:
             kind = str(a.eta_i.get("rewrite_type", ""))
-            if kind in allowed:
-                candidates.append(a)
+            if kind not in allowed:
+                continue
+            fp = _content_fingerprint(a)
+            if fp in seen_candidates:
+                continue
+            seen_candidates.add(fp)
+            candidates.append(a)
 
+        # Limit distinct candidates, not duplicate occurrences of one atom.
         candidates = candidates[: self.writeback.max_atoms_per_run]
 
         stats = self._load_writeback_stats()
@@ -367,4 +375,7 @@ class MemoryStore:
             suppressed_valence=capacity.suppressed_valence,
             allow_seed_overlays=capacity.allow_seed_overlays,
         )
+        # The next fold and budget check must see this abstraction and overlays.
+        # Reloading here would discard them because persistence happens later.
+        self._refresh_atoms()
         return new_atom
